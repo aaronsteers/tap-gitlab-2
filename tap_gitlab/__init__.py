@@ -40,7 +40,7 @@ def get_abs_path(path):
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), path)
 
 def load_schema(entity):
-    return utils.load_json(get_abs_path("schemas/{}.json".format(entity)))
+    return utils.load_json(get_abs_path(f"schemas/{entity}.json"))
 
 RESOURCES = {
     'projects': {
@@ -262,29 +262,23 @@ def request(url, params=None):
         headers['User-Agent'] = CONFIG['user_agent']
 
     resp = SESSION.request('GET', url, params=params, headers=headers)
-    LOGGER.info("GET {}".format(url))
+    LOGGER.info(f"GET {url}")
 
     if resp.status_code in [401, 403, 404]:
-        LOGGER.info("Skipping request to {}".format(url))
-        LOGGER.info("Reason: {} - {}".format(resp.status_code, resp.content))
+        LOGGER.info(f"Skipping request to {url}")
+        LOGGER.info(f"Reason: {resp.status_code} - {resp.content}")
         raise ResourceInaccessible
     elif resp.status_code >= 400:
         LOGGER.critical(
-            "Error making request to GitLab API: GET {} [{} - {}]".format(
-                url, resp.status_code, resp.content))
+            f"Error making request to GitLab API: GET {url} [{resp.status_code} - {resp.content}]"
+        )
+
         sys.exit(1)
 
     return resp
 
 def gen_request(url):
-    if 'labels' in url:
-        # The labels API is timing out for large per_page values
-        #  https://gitlab.com/gitlab-org/gitlab-ce/issues/63103
-        # Keeping it at 20 until the bug is fixed
-        per_page = 20
-    else:
-        per_page = PER_PAGE_MAX
-
+    per_page = 20 if 'labels' in url else PER_PAGE_MAX
     params = {
         'page': 1,
         'per_page': per_page
@@ -297,16 +291,14 @@ def gen_request(url):
 
     try:
         while next_page:
-            params['page'] = int(next_page)
+            params['page'] = next_page
             resp = request(url, params)
             resp_json = resp.json()
             # handle endpoints that return a single JSON object
             if isinstance(resp_json, dict):
                 yield resp_json
-            # handle endpoints that return an array of JSON objects
             else:
-                for row in resp_json:
-                    yield row
+                yield from resp_json
             next_page = resp.headers.get('X-Next-Page', None)
     except ResourceInaccessible as exc:
         # Don't halt execution if a Resource is Inaccessible
@@ -324,9 +316,9 @@ def format_timestamp(data, typ, schema):
 
 def flatten_id(item, target):
     if target in item and item[target] is not None:
-        item[target + '_id'] = item.pop(target, {}).pop('id', None)
+        item[f'{target}_id'] = item.pop(target, {}).pop('id', None)
     else:
-        item[target + '_id'] = None
+        item[f'{target}_id'] = None
 
 def sync_branches(project):
     entity = "branches"
@@ -351,7 +343,7 @@ def sync_commits(project):
     mdata = metadata.to_map(stream.metadata)
 
     # Keep a state for the commits fetched per project
-    state_key = "project_{}_commits".format(project["id"])
+    state_key = f'project_{project["id"]}_commits'
     start_date=get_start(state_key)
 
     url = get_url(entity=entity, id=project['id'], start_date=start_date)
@@ -373,7 +365,7 @@ def sync_issues(project):
     mdata = metadata.to_map(stream.metadata)
 
     # Keep a state for the issues fetched per project
-    state_key = "project_{}_issues".format(project["id"])
+    state_key = f'project_{project["id"]}_issues'
     start_date=get_start(state_key)
 
     url = get_url(entity=entity, id=project['id'], start_date=start_date)
@@ -386,14 +378,10 @@ def sync_issues(project):
             flatten_id(row, "milestone")
 
             # Get the assignee ids
-            assignee_ids = []
-            for assignee in row.get("assignees"):
-                assignee_ids.append(assignee["id"])
+            assignee_ids = [assignee["id"] for assignee in row.get("assignees")]
             row["assignees"] = assignee_ids
 
-            # Get the time_stats
-            time_stats = row.get("time_stats")
-            if time_stats:
+            if time_stats := row.get("time_stats"):
                 row["time_estimate"] = time_stats.get("time_estimate")
                 row["total_time_spent"] = time_stats.get("total_time_spent")
                 row["human_time_estimate"] = time_stats.get("human_time_estimate")
@@ -419,7 +407,7 @@ def sync_merge_requests(project):
     mdata = metadata.to_map(stream.metadata)
 
     # Keep a state for the merge requests fetched per project
-    state_key = "project_{}_merge_requests".format(project["id"])
+    state_key = f'project_{project["id"]}_merge_requests'
     start_date=get_start(state_key)
 
     url = get_url(entity=entity, id=project['id'], start_date=start_date)
@@ -432,20 +420,14 @@ def sync_merge_requests(project):
             flatten_id(row, "closed_by")
 
             # Get the assignee ids
-            assignee_ids = []
-            for assignee in row.get("assignees"):
-                assignee_ids.append(assignee["id"])
+            assignee_ids = [assignee["id"] for assignee in row.get("assignees")]
             row["assignees"] = assignee_ids
 
             # Get the reviewer ids
-            reviewer_ids = []
-            for reviewer in row.get("reviewers"):
-                reviewer_ids.append(reviewer["id"])
+            reviewer_ids = [reviewer["id"] for reviewer in row.get("reviewers")]
             row["reviewers"] = reviewer_ids
 
-            # Get the time_stats
-            time_stats = row.get("time_stats")
-            if time_stats:
+            if time_stats := row.get("time_stats"):
                 row["time_estimate"] = time_stats.get("time_estimate")
                 row["total_time_spent"] = time_stats.get("total_time_spent")
                 row["human_time_estimate"] = time_stats.get("human_time_estimate")
@@ -523,19 +505,26 @@ def sync_tags(project):
 
 
 def sync_milestones(entity, element="project"):
-    stream_name = "{}_milestones".format(element)
+    stream_name = f"{element}_milestones"
     stream = CATALOG.get_stream(stream_name)
     if stream is None or not stream.is_selected():
         return
     mdata = metadata.to_map(stream.metadata)
 
-    url = get_url(entity=element + "_milestones", id=entity['id'])
+    url = get_url(entity=f"{element}_milestones", id=entity['id'])
 
     with Transformer(pre_hook=format_timestamp) as transformer:
         for row in gen_request(url):
-            transformed_row = transformer.transform(row, RESOURCES[element + "_milestones"]["schema"], mdata)
+            transformed_row = transformer.transform(
+                row, RESOURCES[f"{element}_milestones"]["schema"], mdata
+            )
 
-            singer.write_record(element + "_milestones", transformed_row, time_extracted=utils.now())
+
+            singer.write_record(
+                f"{element}_milestones",
+                transformed_row,
+                time_extracted=utils.now(),
+            )
 
 def sync_users(project):
     entity = "users"
@@ -567,7 +556,7 @@ def sync_site_users():
 
 
 def sync_members(entity, element="project"):
-    stream_name = "{}_members".format(element)
+    stream_name = f"{element}_members"
     member_stream = CATALOG.get_stream(stream_name)
     if member_stream is None or not member_stream.is_selected():
         return
@@ -585,26 +574,38 @@ def sync_members(entity, element="project"):
                 singer.write_record("users", user_row, time_extracted=utils.now())
 
             # And then a record for the member
-            row[element + '_id'] = entity['id']
+            row[f'{element}_id'] = entity['id']
             row['user_id'] = row['id']
-            member_row = transformer.transform(row, RESOURCES[element + "_members"]["schema"], member_mdata)
-            singer.write_record(element + "_members", member_row, time_extracted=utils.now())
+            member_row = transformer.transform(
+                row, RESOURCES[f"{element}_members"]["schema"], member_mdata
+            )
+
+            singer.write_record(
+                f"{element}_members", member_row, time_extracted=utils.now()
+            )
 
 
 def sync_labels(entity, element="project"):
-    stream_name = "{}_labels".format(element)
+    stream_name = f"{element}_labels"
     stream = CATALOG.get_stream(stream_name)
     if stream is None or not stream.is_selected():
         return
     mdata = metadata.to_map(stream.metadata)
 
-    url = get_url(entity=element + "_labels", id=entity['id'])
+    url = get_url(entity=f"{element}_labels", id=entity['id'])
 
     with Transformer(pre_hook=format_timestamp) as transformer:
         for row in gen_request(url):
-            row[element + '_id'] = entity['id']
-            transformed_row = transformer.transform(row, RESOURCES[element + "_labels"]["schema"], mdata)
-            singer.write_record(element + "_labels", transformed_row, time_extracted=utils.now())
+            row[f'{element}_id'] = entity['id']
+            transformed_row = transformer.transform(
+                row, RESOURCES[f"{element}_labels"]["schema"], mdata
+            )
+
+            singer.write_record(
+                f"{element}_labels",
+                transformed_row,
+                time_extracted=utils.now(),
+            )
 
 def sync_epic_issues(group, epic):
     entity = "epic_issues"
@@ -633,7 +634,7 @@ def sync_epics(group):
     mdata = metadata.to_map(stream.metadata)
 
     # Keep a state for the epics fetched per group
-    state_key = "group_{}_epics".format(group['id'])
+    state_key = f"group_{group['id']}_epics"
     start_date=get_start(state_key)
 
     url = get_url(entity=entity, id=group['id'], start_date=start_date)
@@ -704,7 +705,7 @@ def sync_pipelines(project):
 
     mdata = metadata.to_map(stream.metadata)
     # Keep a state for the pipelines fetched per project
-    state_key = "project_{}_pipelines".format(project['id'])
+    state_key = f"project_{project['id']}_pipelines"
     start_date=get_start(state_key)
 
     url = get_url(entity=entity, id=project['id'], start_date=start_date)
@@ -780,19 +781,26 @@ def sync_jobs(project, pipeline):
             singer.write_record(entity, transformed_row, time_extracted=utils.now())
 
 def sync_variables(entity, element="project"):
-    stream_name = "{}_variables".format(element)
+    stream_name = f"{element}_variables"
     stream = CATALOG.get_stream(stream_name)
     if stream is None or not stream.is_selected():
         return
     mdata = metadata.to_map(stream.metadata)
 
-    url = get_url(entity=element + "_variables", id=entity['id'])
+    url = get_url(entity=f"{element}_variables", id=entity['id'])
 
     with Transformer(pre_hook=format_timestamp) as transformer:
         for row in gen_request(url):
-            row[element + '_id'] = entity['id']
-            transformed_row = transformer.transform(row, RESOURCES[element + "_variables"]["schema"], mdata)
-            singer.write_record(element + "_variables", transformed_row, time_extracted=utils.now())
+            row[f'{element}_id'] = entity['id']
+            transformed_row = transformer.transform(
+                row, RESOURCES[f"{element}_variables"]["schema"], mdata
+            )
+
+            singer.write_record(
+                f"{element}_variables",
+                transformed_row,
+                time_extracted=utils.now(),
+            )
 
 def sync_project(pid):
     url = get_url(entity="projects", id=pid)
@@ -808,15 +816,15 @@ def sync_project(pid):
     stream = CATALOG.get_stream("projects")
     mdata = metadata.to_map(stream.metadata)
 
-    state_key = "project_{}".format(data["id"])
+    state_key = f'project_{data["id"]}'
 
     #pylint: disable=maybe-no-member
     last_activity_at = data.get('last_activity_at', data.get('created_at'))
     if not last_activity_at:
         raise Exception(
-            #pylint: disable=line-too-long
-            "There is no last_activity_at or created_at field on project {}. This usually means I don't have access to the project."
-            .format(data['id']))
+            f"There is no last_activity_at or created_at field on project {data['id']}. This usually means I don't have access to the project."
+        )
+
 
 
     if data['last_activity_at'] >= get_start(state_key):
@@ -859,11 +867,13 @@ def do_discover(select_all=False):
         )
 
         if (
-            resource in ULTIMATE_RESOURCES and not CONFIG["ultimate_license"]
-        ) or (
-            resource == "site_users" and api_url_regex.match(CONFIG['api_url']) is not None
-        ) or (
-            resource in STREAM_CONFIG_SWITCHES and not CONFIG["fetch_{}".format(resource)]
+            (resource in ULTIMATE_RESOURCES and not CONFIG["ultimate_license"])
+            or (
+                resource == "site_users"
+                and api_url_regex.match(CONFIG['api_url']) is not None
+            )
+            or resource in STREAM_CONFIG_SWITCHES
+            and not CONFIG[f"fetch_{resource}"]
         ):
             mdata = metadata.to_list(metadata.write(metadata.to_map(mdata), (), 'inclusion', 'unsupported'))
         elif select_all:
@@ -942,12 +952,8 @@ def main_impl():
     if args.discover:
         CATALOG = do_discover()
         CATALOG.dump()
-    # Otherwise run in sync mode
     else:
-        if args.catalog:
-            CATALOG = args.catalog
-        else:
-            CATALOG = do_discover(select_all=True)
+        CATALOG = args.catalog or do_discover(select_all=True)
         do_sync()
 
 
